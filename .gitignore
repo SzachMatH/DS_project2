@@ -1,0 +1,4 @@
+# Genrated files
+target/
+# I'm not sure whether this should be added
+Cargo.lock 
