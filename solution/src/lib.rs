@@ -6,6 +6,11 @@ pub use register_client_public::*;
 pub use sectors_manager_public::*;
 pub use transfer_public::*;
 
+//dependencies added by me (Bartek) below:
+use bincode::serde::{encode_into_std_write};
+
+//end of dependencies added by me
+
 pub async fn run_register_process(config: Configuration) {
     unimplemented!()
 }
@@ -86,10 +91,11 @@ pub mod sectors_manager_public {
 }
 
 pub mod transfer_public {
-    use crate::RegisterCommand;
+    use sha2::{Digest, Sha256};
+    use crate::{ClientCommandHeader, ClientRegisterCommand, RegisterCommand, SystemCommandHeader, SystemRegisterCommand, SystemRegisterCommandContent};
     use bincode::error::{DecodeError, EncodeError};
     use std::io::Error;
-    use tokio::io::{AsyncRead, AsyncWrite};
+    use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
     #[derive(Debug)]
     pub enum EncodingError {
         IoError(Error),
@@ -108,7 +114,24 @@ pub mod transfer_public {
         hmac_system_key: &[u8; 64],
         hmac_client_key: &[u8; 32],
     ) -> Result<(RegisterCommand, bool), DecodingError> {
-        unimplemented!()
+        let mut msg_bytes = [0u8 ; 8];
+        data.read_exact(&mut msg_bytes).await.map_err(|e| DecodingError::IoError(e))?;
+
+        let msg_size = u64::from_be_bytes(msg_bytes);
+
+        let mut payload_bytes = vec![0u8; msg_size as usize]; 
+        data.read_exact(&mut payload_bytes).await.map_err(|e| DecodingError::IoError(e))?;
+
+        let deserialized = bincode::serde::decode_from_slice(
+            payload_bytes.as_slice(),
+            bincode::config::standard()
+                .with_big_endian()
+                .with_fixed_int_encoding()
+        ).map_err(|e| DecodingError::BincodeError(e))?;
+
+        todo!("add here some logic that checks more things!");
+        
+        Ok((deserialized,true))
     }
 
     pub async fn serialize_register_command(
@@ -116,7 +139,39 @@ pub mod transfer_public {
         writer: &mut (dyn AsyncWrite + Send + Unpin),
         hmac_key: &[u8],
     ) -> Result<(), EncodingError> {
-        unimplemented!()
+        
+        match cmd {
+            RegisterCommand::Client(_) => {
+                if hmac_key.len() != 32 {
+                    return Err(EncodingError::IoError(Error::other("bad format of client hmac key. Expected 32B")));
+                }
+            },
+            RegisterCommand::System(_) => {
+                if hmac_key.len() != 64 {
+                    return Err(EncodingError::IoError(Error::other("bad format of sytem hmac key. Expected 64B")));
+                }
+            },
+        };
+        
+        let payload_as_bin : Vec<u8> = bincode::serde::encode_to_vec(
+            (cmd, hmac_key),
+            bincode::config::standard()
+                .with_big_endian()
+                .with_fixed_int_encoding()
+        ).map_err(|e| EncodingError::BincodeError(e))?;
+
+        let mut hasher = Sha256::new();
+        hasher.update(&payload_as_bin);
+        let hmac_of_payload = hasher.finalize(); 
+
+        let msg_size = payload_as_bin.len() as u64 + hmac_of_payload.len() as u64;
+
+        //writing starts now
+        writer.write_all(&msg_size.to_be_bytes()).await.map_err(|e| EncodingError::IoError(e))?;
+        writer.write_all(payload_as_bin.as_slice()).await.map_err(|e| EncodingError::IoError(e))?;
+        writer.write_all(hmac_of_payload.as_slice()).await.map_err(|e| EncodingError::IoError(e))?;
+
+        Ok(())
     }
 }
 
