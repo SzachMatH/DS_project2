@@ -33,7 +33,6 @@ pub async fn tcp_client_response(
     Ok(())
 }
 
-
 //This function is here mostly to keep the logic of the transfering data regardless of the 
 //way it is begin transferred
 //To be fair this function is really simple, but keeping it here shows the intention of how 

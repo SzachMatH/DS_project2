@@ -26,6 +26,7 @@ pub trait SectorsManager: Send + Sync {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 struct Timestamp(u64);
 //btw, this is zero-cost abstraction!
+//After completing this assigment I think this was a bad idea
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 struct WriteRank(u8);
 
@@ -65,6 +66,10 @@ impl SectorsManager for SecMan {
         };
         let mut file = File::open(&path_to_read).await.expect("Failed to open file in read_data");
         let mut read_into : SectorVec = SectorVec(Box::new(serde_big_array::Array([0; SECTOR_SIZE])));
+        //if let Err(e) = file.read_exact(&mut **read_into.0).await {
+        //    log::error!("Sector {} is corrupted! err = {}", idx, e);
+        //    return SectorVec(Box::new(serde_big_array::Array([0; SECTOR_SIZE])));
+        //}
         file.read_exact(&mut **read_into.0).await.expect("read_data fails in read_exact");
 
         read_into
@@ -103,21 +108,15 @@ impl SectorsManager for SecMan {
         //the sam idx number
         let old_metadata = {
             let mut lock = self.map.lock().await;
-            // .insert() returns the OLD value if one existed
             lock.insert(idx, (Timestamp(sector.1), WriteRank(sector.2)))
         };
 
-        // 6. Cleanup Old File
         if let Some((Timestamp(old_ts), WriteRank(old_wr))) = old_metadata {
-            // CRITICAL CHECK: Only delete if the old file is actually distinct!
-            // If we are overwriting sec_0_1_1 with sec_0_1_1 (same timestamp/rank),
-            // the "old" file is the SAME as the "new" file. Deleting it would lose data.
             if (old_ts, old_wr) != (sector.1, sector.2) {
                 let old_path = self.root_path.join(
                     format!("sec_{}_{}_{}", idx, old_ts, old_wr)
                 );
-                // We ignore errors here (best effort cleanup). 
-                // It's okay if the file is already gone.
+                //It's okay if the file is already gone.
                 let _ = fs::remove_file(old_path).await;
             }
         }
@@ -161,7 +160,6 @@ pub async fn build_sectors_manager(path: PathBuf) -> Arc<dyn SectorsManager> {
     let mut map = HashMap::new();
     let mut read_dir = fs::read_dir(&path).await.expect("Failed to read directory");
 
-    // 1. Recover state from disk
     while let Some(entry) = read_dir.next_entry().await.expect("Failed to read entry") {
         let file_name = entry.file_name();
         let name_str = file_name.to_string_lossy();
@@ -172,34 +170,36 @@ pub async fn build_sectors_manager(path: PathBuf) -> Arc<dyn SectorsManager> {
             let _ = fs::remove_file(entry.path()).await;
             continue;
         } else if name_str.starts_with("sec_") {
+            if let Ok(metadata) = fs::metadata(entry.path()).await {
+                if metadata.len() != SECTOR_SIZE as u64 {
+                    log::error!("Corrupted file found! removing...");
+                    let _ = fs::remove_file(entry.path()).await;
+                    continue;
+                }
+            }
             let parts: Vec<&str> = name_str.split('_').collect();
-            if parts.len() == 4 {
-                if let (Ok(idx), Ok(ts), Ok(wr)) = (
-                    parts[1].parse::<SectorIdx>(),
-                    parts[2].parse::<u64>(),
-                    parts[3].parse::<u8>(),
-                ) {
-                    // Check if this file is newer than what we have in the map
-                    let current_best = map.get(&idx);
-                    let found_ver = (Timestamp(ts), WriteRank(wr));
-                    
-                    match current_best {
-                        Some(&existing_ver) => {
-                            if found_ver > existing_ver {
-                                // We found a newer version. Update map and delete the old file.
-                                let (old_ts, old_wr) = existing_ver;
-                                let old_path = path.join(format!("sec_{}_{}_{}", idx, old_ts.0, old_wr.0));
-                                let _ = fs::remove_file(old_path).await;
-                                
-                                map.insert(idx, found_ver);
-                            } else {
-                                // The file we found is older. Delete it.
-                                let _ = fs::remove_file(entry.path()).await;
-                            }
-                        },
-                        None => {
+            if let (Ok(idx), Ok(ts), Ok(wr)) = (
+                parts[1].parse::<SectorIdx>(),
+                parts[2].parse::<u64>(),
+                parts[3].parse::<u8>(),
+            ) {
+                let current_best = map.get(&idx);
+                let found_ver = (Timestamp(ts), WriteRank(wr));
+                
+                match current_best {
+                    Some(&existing_ver) => {
+                        if found_ver > existing_ver {
+                            let (old_ts, old_wr) = existing_ver;
+                            let old_path = path.join(format!("sec_{}_{}_{}", idx, old_ts.0, old_wr.0));
+                            let _ = fs::remove_file(old_path).await;
+                            
                             map.insert(idx, found_ver);
+                        } else {
+                            let _ = fs::remove_file(entry.path()).await;
                         }
+                    },
+                    None => {
+                        map.insert(idx, found_ver);
                     }
                 }
             }
@@ -212,3 +212,4 @@ pub async fn build_sectors_manager(path: PathBuf) -> Arc<dyn SectorsManager> {
         root_path : path,
     })
 }
+

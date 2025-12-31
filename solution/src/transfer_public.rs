@@ -107,3 +107,4 @@ pub async fn serialize_register_command(
     writer.flush().await.map_err(|e| EncodingError::IoError(e))?;
     Ok(())
 }
+

@@ -149,8 +149,6 @@ impl AtomicReg {
     }
 
     async fn handle_value(&mut self, ts : u64, wr : u8, sec_data : SectorVec, msg_ident : Uuid, proc_id : u8) {
-        //Ignore if we are not running an op, or if this message is for an old op
-        // todo! Is this really a good idea?
         if !self.is_executing || self.write_phase || msg_ident != self.msg_ident {
             return;
         }
@@ -163,7 +161,6 @@ impl AtomicReg {
             let mut max_ts = 0;
             let mut max_wr = 0;
             let mut max_val = None;
-            //todo! Make sure this is a good way to compare two values  
             for (_, (ts, wr, val)) in &self.read_list {
                 if *ts > max_ts || (*ts == max_ts && *wr > max_wr) {
                     max_ts = *ts;
@@ -198,14 +195,13 @@ impl AtomicReg {
             let msg = SystemRegisterCommand {
                 header: SystemCommandHeader {
                     process_identifier: self.setup.self_rank,
-                    msg_ident: self.msg_ident,//This is an unholy line of code ):
+                    msg_ident: self.msg_ident,
                     sector_idx: self.setup.sector_idx,
                 },
                 content: SystemRegisterCommandContent::WriteProc {
                     timestamp: self.target_ts,
                     write_rank: self.target_wr,
                     data_to_write: send_data,
-                    //idea?
                 },
             };
             self.broadcaster.start(self.setup.register_client.clone(), msg);
@@ -213,7 +209,6 @@ impl AtomicReg {
     }
 
     async fn handle_write_proc(&mut self, ts : u64, wr : u8, new_data : SectorVec, proc_id : u8, msg_ident : Uuid) {
-        // Update local state ONLY if the new timestamp is higher
         if ts > self.sector_data.timestamp || (ts == self.sector_data.timestamp && wr > self.sector_data.writerank) {
             self.sector_data.timestamp = ts;
             self.sector_data.writerank = wr;
@@ -221,7 +216,6 @@ impl AtomicReg {
             self.setup.sectors_manager.write(self.setup.sector_idx, &(self.sector_data.data.clone(), ts,  wr)).await;
         }
 
-        // Always Ack (even if we didn't update, we acknowledge receipt)
         let reply = SystemRegisterCommand {
             header: SystemCommandHeader {
                 process_identifier : self.setup.self_rank,
@@ -254,7 +248,7 @@ impl AtomicReg {
                             read_data: self.reading_val.clone().unwrap() 
                         },
                         Some(OperationType::Write) => OperationReturn::Write,
-                        None => OperationReturn::Write,//Should never happen
+                        None => unreachable!(),
                     },
                 };
                 cb(response).await;
@@ -374,3 +368,5 @@ pub async fn build_atomic_register(
         processes_count,
     ).await)
 }
+
+
