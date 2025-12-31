@@ -1,10 +1,16 @@
 use crate::domain::*;
-use crate::SystemRegisterCommand;
+use crate::transfer_public::serialize_register_command;
 use std::sync::Arc;
 use std::collections::HashMap;
+use std::time::Duration;
 use tokio::net::TcpStream;
-use tokio::sync::{RwLock, Mutex};
+use tokio::sync::RwLock;
+use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc;
 
+const WORKER_QUEUE_SIZE : usize = 1024;
+const RETRY_DELAY : Duration = Duration::from_millis(500);
+//todo! Make sure this size makes sense!
 /*
 * Stubborn links
 * Stubborn best effort broadcast
@@ -64,50 +70,155 @@ pub struct Send {
     pub cmd: Arc<SystemRegisterCommand>,
     /// Identifier of the target process. Those start at 1.
     pub target: u8,
-}
+} 
 
-pub struct TcpHandler {
-    tcp_locations : Vec<String>,
-    map : RwLock<HashMap<u8, Arc<Mutex<TcpStream>>>>,
+pub(crate) struct TcpHandler {
+    tcp_locations : Vec<(String,u16)>,
+    self_proc : u8,
+    self_channel : Sender<SystemRegisterCommand>,
+    workers_map : RwLock<HashMap<u8, Sender<Arc<SystemRegisterCommand>>>>,
+    hmac_system : [u8; 64],
 }
 
 impl TcpHandler {
-    pub fn new(tcp_addresses : Vec<(String,u16)>) -> Self {
-        unimplemented!();
+    pub fn new(
+        tcp_locations : Vec<(String,u16)>,
+        self_proc : u8,
+        self_channel : Sender<SystemRegisterCommand>,
+        hmac_system : [u8; 64],
+    ) -> Self {
+        Self {
+            tcp_locations,
+            self_proc,
+            self_channel,
+            workers_map : RwLock::new(HashMap::new()),
+            hmac_system,    
+        }
     }
     
-    fn try_establish_connection() -> Mutex<TcpStream> {
-        {
-            let reader = self.map().read().await;
-            if let Some(connection) = reader.get(&)
+    ///It is assumed that this function is only inovoked when target_proc =/= self.self_proc 
+    async fn worker_getter(&self, target_proc : u8) -> Sender<Arc<SystemRegisterCommand>> {
+        if target_proc == self.self_proc {
+            unreachable!();
         }
+        if let Some(tx) = self.workers_map
+            .read()
+            .await
+            .get(&target_proc) {
+
+            return tx.clone();
+        }//Does this look good? I think it's about personal taste
+
+        let (tx, rx) = mpsc::channel(WORKER_QUEUE_SIZE);
+        let address = self.get_address(target_proc);
+        let hmac = self.hmac_system;
+        tokio::spawn(worker_task(target_proc, address, rx, hmac));
+        let mut guard = self.workers_map.write().await;
+        guard.insert(target_proc, tx.clone());
+        tx
+    }
+
+    fn get_address(&self, target_proc : u8) -> String {
+        let (host, port) = &self.tcp_locations[(target_proc - 1) as usize];
+        format!("{}:{}", host, port)
     }
 }
 
 #[async_trait::async_trait]
 impl RegisterClient for TcpHandler {
     async fn send(&self, msg: Send) {
-        let connection = self.try_establish_connection(msg.target);
-        todo!("connection.send(msg) or something like that");
+        if msg.target == self.self_proc {
+            self.self_channel.send((*msg.cmd).clone()).await;
+        } else {
+            let tx = self.worker_getter(msg.target).await;
+            if let Err(_) = tx.send(msg.cmd).await {
+                log::error!("We cannot send a message to {}",msg.target);
+            }
+        }
     }
 
     async fn broadcast(&self, msg: Broadcast) {
-        let connections : Vec<????????> = self.tcp_locations.iter()
-            .map(|name| todo!("Map this name to a valid u8 process id"))
-            .map(|u8_name| self.try_establish_connection(u8_name))
-            .collect();
+        for target in 1..=self.tcp_locations.len() {
+            self.send( Send {
+                cmd : msg.cmd.clone(),
+                target : target as u8
+            }).await;
+        }
     }
 }
 
+async fn worker_task(
+    target_proc : u8,
+    address : String,
+    mut rx : mpsc::Receiver<Arc<SystemRegisterCommand>>,
+    hmac : [u8; 64],
+) {
+    log::debug!("Worker started for process {} ({})", target_proc, address);
+    let mut stream : Option<TcpStream> = None;
+    while let Some(cmd) = rx.recv().await {
+        let active_stream = stubborn_send_op(target_proc, &address, &hmac, cmd, stream).await;
+        stream = Some(active_stream);
+    }
+}
 
-/* todo! 
-*
-* Think whether codomain type of map is good
-*
-* I just want this module to handle messaging sending, nothing more to be honest.
-* This should be straighforward given that I already have deserialization etc.
-*
-* This should be a nice, abstraction that does not show its flesh
-*
-* I should implement the spammer
-*/
+//Notice that this is stubborn in a sense that despite lack of connection
+//it tries to connect.
+//It is NOT stubborn (yet, there is a wrapper for that) in the sense that
+//it broadcasts the message until it gets ACK messages back, okay?
+async fn stubborn_send_op(
+    target_proc : u8,
+    addr : &str,
+    hmac : &[u8;64],
+    cmd : Arc<SystemRegisterCommand>,
+    mut stream : Option<TcpStream>,
+) -> TcpStream {
+    loop {
+        if stream.is_none() {
+            stream = try_connect(target_proc, addr).await;
+        }
+        if let Some(mut connection) = stream.take() {
+            match try_write(&mut connection, &cmd, hmac).await {
+                Ok(_) => {
+                    return connection;
+                },
+                Err(_) => {
+                    stream = None;
+                    tokio::time::sleep(RETRY_DELAY).await;
+                },
+            }
+        } else {
+            tokio::time::sleep(RETRY_DELAY).await;
+        }
+    }
+}
+
+async fn try_write(
+    socket : &mut TcpStream,
+    cmd : &Arc<SystemRegisterCommand>,
+    hmac : &[u8; 64]
+) -> Result<(),()> {
+    let register_command = RegisterCommand::System((**cmd).clone());
+    match serialize_register_command(&register_command, socket, hmac).await {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            log::debug!("Serialization failed. socket is {:?}", e);
+            Err(())
+        }
+    }
+}
+
+async fn try_connect(target_proc : u8, addr : &str) -> Option<TcpStream> {
+    match TcpStream::connect(addr).await {
+        Ok(stream) => {
+            if let Err(_) = stream.set_nodelay(true) {
+                log::debug!("I have no idea why this happens?");
+            }
+            Some(stream)
+        },
+        Err(e) => {
+            log::debug!("No connection with proc {}, addr = {} {}",target_proc, addr,e);
+            None
+        }
+    }
+}
+

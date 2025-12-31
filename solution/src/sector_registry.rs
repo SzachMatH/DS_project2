@@ -1,10 +1,12 @@
 use crate::domain::*;
-use crate::{
-    build_atomic_register, AtomicRegister, RegisterClient, SectorsManager,
-};
+use crate::atomic_register_public::{build_atomic_register, AtomicRegister};
+use crate::sectors_manager_public::SectorsManager;
+use crate::register_client_public::RegisterClient;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
+
+//todo! Write what this module is meant for in this place!
 
 pub struct SectorRegistry {
     active_registers: RwLock<HashMap<SectorIdx, Arc<Mutex<Box<dyn AtomicRegister>>>>>,
@@ -47,7 +49,7 @@ impl SectorRegistry {
         }
 
         let new_register = build_atomic_register(
-            self_rank,
+            self.self_rank,
             sector_idx,
             self.register_client.clone(),
             self.sectors_manager.clone(),

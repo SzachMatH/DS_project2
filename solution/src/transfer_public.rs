@@ -1,7 +1,5 @@
+use sha2::{Sha256};
 use crate::domain::*;
-
-use sha2::{Digest, Sha256};
-use crate::{ClientCommandHeader, ClientRegisterCommand, RegisterCommand, SystemCommandHeader, SystemRegisterCommand, SystemRegisterCommandContent};
 use bincode::error::{DecodeError, EncodeError};
 use std::io::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -36,10 +34,9 @@ pub async fn deserialize_register_command(
     data.read_exact(&mut rest_of_package).await.map_err(|e| DecodingError::IoError(e))?;
 
     let split_numb = msg_size - 32;
-    todo!("think what when size of the message is equal to 32");
     let (payload, hmac_tag) = rest_of_package.split_at(split_numb as usize);
 
-    let (deserialized, size_of_cmd_bytes) = bincode::serde::decode_from_slice(
+    let (deserialized, _size_of_cmd_bytes) = bincode::serde::decode_from_slice(
         &payload,
         bincode::config::standard()
             .with_big_endian()
@@ -55,15 +52,12 @@ pub async fn deserialize_register_command(
         }
     };
 
-    todo!("think what about when I have different length comign from different hmac keys!");
     type HmacSha256 = Hmac<Sha256>;
     let mut verifier = HmacSha256::new_from_slice(relevant_hmac_key)
-        .map_err(|e| DecodingError::IoError(Error::other(e)))?; // MAYBE LATER CHANGE ERROR
-    // TYPE TODO todo! to_do TO_DO
+        .map_err(|e| DecodingError::IoError(Error::other(e)))?;
     
     verifier.update(&payload);
-    //let payload_tag = verifier.finalize().into_bytes(); //I'll leave it just in case
-    
+
     Ok((
         deserialized,
         verifier //this is true/false

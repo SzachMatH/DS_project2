@@ -94,28 +94,22 @@ impl SectorsManager for SecMan {
 
     async fn read_metadata(&self, idx: SectorIdx) -> (u64, u8) {
         let guard = self.map.lock();
-        {
-            let ret = guard[idx];
+        if let Some(ret) = guard[&idx] {
             (ret.0, ret.1)
+        } else {
+            (0,0)
         }
     }
 
     async fn write(&self, idx: SectorIdx, sector: &(SectorVec, u64, u8)) {
         let (ts, wr) = {
             let guard = self.map.lock();
-            guard[idx]
+            guard[&idx]
         }; // this parenthesis are used so that we drop the guard
 
         todo!("What if the timestamp is the same. Is that possible?");
         let tmp_path = todo!();
         self.stable_mem.put(tmp_path,&**sector.0);
-
-        todo!("
-           Sometimes I will overwrite old data. In that case
-            I need to watch out for deleting old instances!
-            
-            I just need to write it!
-        ");
     }
 }
 
@@ -124,9 +118,34 @@ struct StableMem {
 }
 
 impl StableMem {
-    fn new(root_dir : PathBuf) -> Self {
+    pub fn new(root_dir : PathBuf) -> Self {
+        let mut index = HashMap::new();
+        let mut dir = fs::read_dir(&root_path).await.expect("root dir is broken");
+
+        while let Ok(Some(entry)) = dir.next_entry().await {
+            let fname = entry.file_name().to_string_lossy().to_string();
+            
+            //sec_{idx}_{ts}_{wr}
+            if !fname.starts_with("sec_") { continue; }
+            let parts: Vec<&str> = fname.split('_').collect();
+            if parts.len() != 4 { continue; }
+
+            if let (Ok(idx), Ok(ts), Ok(wr)) = (
+                parts[1].parse::<SectorIdx>(),//todo! shouldn this be a different type?
+                parts[2].parse::<u64>(),
+                parts[3].parse::<u8>(),
+            ) {
+                let current = index.entry(idx).or_insert((0, 0, String::new()));
+                if (ts, wr) > (current.0, current.1) {
+                    *current = (ts, wr, fname.clone());
+                    // Note: In a real recovery, we would delete the "loser" file here
+                }
+            }
+        }
+
         Self {
-            root_storage_dir : root_dir,
+            root_path,
+            index: Mutex::new(index),
         }
     }
 
