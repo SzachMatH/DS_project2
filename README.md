@@ -1,10 +1,10 @@
+# (N,N)-Atomic Register system
+
 ### A second big assignment of the distributed systems class of 25/26
 
 ## Overview
 
 This project implements a distributed **(N,N)-Atomic Register** system. It allows multiple concurrent clients to read and write 4096-byte data sectors across a cluster of nodes. The system guarantees linearizability (atomicity) even in the presence of node crashes and network partitions, provided a majority of nodes remain accessible.
-
-The core logic follows the **Read-Impose Write-Majority** algorithm, ensuring that once a write is acknowledged, any subsequent read operation will return that value or a newer one.
 
 ## Architecture
 
@@ -19,4 +19,5 @@ The system is modular, using `tokio` for asynchronous execution. Communication i
 * **`sectors_manager_public.rs`**: The persistence layer. It ensures durability by writing to temporary files and using `fs::rename` (atomic on POSIX) to swap them into place. It also handles **Crash Recovery** by scanning the directory on startup and cleaning up incomplete writes.
 * **`network_handler.rs`**: The TCP server that deserializes incoming commands, verifies HMAC signatures, and routes commands to the appropriate register.
 
+### Dependency graph:
 ![Dependency Graph](./dependency_graph.png)
