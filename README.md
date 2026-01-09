@@ -20,4 +20,4 @@ The system is modular, using `tokio` for asynchronous execution. Communication i
 * **`network_handler.rs`**: The TCP server that deserializes incoming commands, verifies HMAC signatures, and routes commands to the appropriate register.
 
 
-![Dependency Graph](./dependency_graph.svg)
+<img src="./dependency_graph.svg" alt="Dependency Graph" width="600">
