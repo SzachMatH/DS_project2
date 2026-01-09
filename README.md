@@ -19,5 +19,4 @@ The system is modular, using `tokio` for asynchronous execution. Communication i
 * **`sectors_manager_public.rs`**: The persistence layer. It ensures durability by writing to temporary files and using `fs::rename` (atomic on POSIX) to swap them into place. It also handles **Crash Recovery** by scanning the directory on startup and cleaning up incomplete writes.
 * **`network_handler.rs`**: The TCP server that deserializes incoming commands, verifies HMAC signatures, and routes commands to the appropriate register.
 
-
-<img src="./dependency_graph.svg" alt="Dependency Graph" width="600">
+![Dependency Graph](./dependency_graph.png)
